@@ -1,0 +1,41 @@
+#:schema https://raw.githubusercontent.com/larvae-luau/larvae/master/crates/larvae/larvae.schema.json
+# Snap build configuration for larvae (https://github.com/larvae-luau/larvae).
+# Replaces darklua: build/.darklua.json, plugin/.darklua.json and
+# benchmark/.darklua.json were removed in the migration. Validated with
+# larvae 0.9.0 -- run `rokit install`, then `larvae check` to re-validate.
+#
+# Conventions used below:
+# - `target = "path"` keeps Lune-compatible filesystem requires in bundles.
+# - `@lune/*` are runtime externals. They resolve to typedefs through .luaurc,
+#   so larvae warns ("no module found") but leaves the require untouched, which
+#   is exactly what ships: Lune provides those modules at runtime.
+# - `[defines]` only folds BARE globals, and only through `process` (not
+#   `bundle`). The compiler reads its release flags through _G so that
+#   --!strict stays quiet about unknown globals, so .lune/build.luau folds
+#   `_G.RELEASE` and `_G.VERSION` explicitly after bundling. See
+#   foldReleaseFlags there; do not add bare RELEASE/VERSION reads to src/.
+
+input = "src"
+target = "path"
+
+[requires]
+# Keep false: with strict on, the expected @lune/* external warnings become
+# errors and the build breaks. `larvae check` still gates real breakage.
+strict = false
+
+[defines]
+RELEASE = true
+VERSION = "0.18.9"
+
+[rules]
+remove_types = true
+compute_expression = true
+remove_unused_if_branch = true
+
+[bundle]
+entry = "src/CLI/init.luau"
+output = "release/blink.luau"
+
+[profile.plugin]
+bundle.entry = "plugin/src/init.server.luau"
+bundle.output = "release/plugin/init.server.luau"

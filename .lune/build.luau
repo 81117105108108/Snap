@@ -16,8 +16,56 @@ local CLI_PATH = "src/CLI/init.luau"
 local BUNDLE_PATH = `{RELEASE_DIR}/blink.luau`
 local PESDE_RELEASE_PATH = `{RELEASE_DIR}/blink_pesde.luau`
 
-local BUNDLE_CONFIG = "build/.darklua.json"
+local LARVAE_CONFIG = "larvae.toml"
 local PLUGIN_ROJO_CONFIG = "build/plugin.project.json"
+
+-- The build needs larvae 0.9+ (see rokit.toml). An older larvae earlier on PATH
+-- (for example a cargo install shadowing the rokit link) would produce a
+-- subtly different bundle, so fail loudly instead.
+local function assertLarvaeVersion()
+	local version_result = process.exec("larvae", { "--version" })
+	assert(version_result.ok, version_result.stderr)
+	local major, minor = string.match(version_result.stdout, "larvae (%d+)%.(%d+)%.%d+")
+	local ok = major ~= nil and (tonumber(major) or 0) > 0 or (major == "0" and (tonumber(minor) or 0) >= 9)
+	assert(ok, `larvae 0.9+ is required (run rokit install), found: {string.gsub(version_result.stdout, "%s+", "")}`)
+end
+
+-- larvae `defines` only folds bare globals (and only through `process`, not
+-- `bundle`), while the compiler reads its release flags through _G so that
+-- --!strict stays quiet about unknown globals. Fold the two accesses
+-- explicitly so release bundles behave exactly like the old darklua
+-- inject_global_value output. The patterns anchor the full name: other _G
+-- uses (WATCH_THREAD, _G._BLINK) are runtime state and must never match.
+local function foldReleaseFlags(Text: string, Version: string): string
+	local Folded = string.gsub(Text, "_G%.RELEASE", "true")
+	Folded = string.gsub(Folded, "_G%.VERSION", `"{Version}"`)
+	return Folded
+end
+
+-- Single source of truth for the release stamp: [defines] VERSION in larvae.toml.
+-- The header is anchored to a line start so the file's own comments (which
+-- mention [defines]) can never match.
+local function readBundleVersion(): string
+	local Config = fs.readFile(LARVAE_CONFIG)
+	local Section = string.match(Config, "\n%[defines%]([^%[]*)") or string.match(Config, "^%[defines%]([^%[]*)")
+	assert(Section ~= nil, "larvae.toml [defines] is missing")
+	local Version = string.match(Section, 'VERSION%s*=%s*"([^"]+)"')
+	assert(Version ~= nil, "larvae.toml [defines] VERSION is missing")
+	return Version
+end
+
+local function bundle(Entry: string, Out: string, Profile: string?)
+	local Arguments = { "bundle", "--config", LARVAE_CONFIG, "--entry", Entry, "--out", Out }
+	if Profile then
+		table.insert(Arguments, "--profile")
+		table.insert(Arguments, Profile)
+	end
+
+	local bundle_result = process.exec("larvae", Arguments)
+	assert(bundle_result.ok, bundle_result.stderr)
+
+	fs.writeFile(Out, foldReleaseFlags(fs.readFile(Out), readBundleVersion()))
+end
 
 local function build_executable(platform: Platforms, arch: Archs)
 	local target = `{platform}-{arch}`
@@ -59,15 +107,12 @@ local function build_executable(platform: Platforms, arch: Archs)
 end
 
 local function build_pesde()
-	local darklua_result =
-		process.exec("darklua", { "process", "--config", BUNDLE_CONFIG, CLI_PATH, PESDE_RELEASE_PATH })
-	assert(darklua_result.ok, darklua_result.stderr)
+	bundle("./" .. CLI_PATH, "./" .. PESDE_RELEASE_PATH)
 	log("Build pesde source")
 end
 
 local function build_executables()
-	local bundle_result = process.exec("darklua", { "process", "--config", BUNDLE_CONFIG, CLI_PATH, BUNDLE_PATH })
-	assert(bundle_result.ok, bundle_result.stderr)
+	bundle("./" .. CLI_PATH, "./" .. BUNDLE_PATH)
 	log("Bundled CLI source code")
 
 	build_executable("macos", "x86_64")
@@ -88,14 +133,7 @@ local function build_studio_plugin()
 		end
 	end
 
-	local bundle_result = process.exec("darklua", {
-		"process",
-		"--config",
-		BUNDLE_CONFIG,
-		`{PLUGIN_SOURCE_DIR}/init.server.luau`,
-		`{PLUGIN_RELEASE_DIR}/init.server.luau`,
-	})
-	assert(bundle_result.ok, bundle_result.stderr)
+	bundle("./" .. PLUGIN_SOURCE_DIR .. "/init.server.luau", "./" .. PLUGIN_RELEASE_DIR .. "/init.server.luau", "plugin")
 
 	local rojo_result = process.exec("rojo", {
 		"build",
@@ -117,6 +155,7 @@ do
 end
 
 local start = os.clock()
+assertLarvaeVersion()
 build_pesde()
 build_executables()
 build_studio_plugin()

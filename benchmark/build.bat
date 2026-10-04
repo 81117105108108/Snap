@@ -28,7 +28,7 @@ if not exist roblox mkdir roblox
 rojo sourcemap default.project.json --output sourcemap.json --include-non-scripts
 REM Update sourcemap used for luau-lsp
 rojo sourcemap default.project.json --output ../sourcemap.json --include-non-scripts
-darklua process src roblox
+larvae process --config larvae.toml
 rojo build build.project.json --output "./Benchmark.rbxl"
 
 setlocal

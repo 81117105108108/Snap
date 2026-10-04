@@ -1,0 +1,11 @@
+#:schema https://raw.githubusercontent.com/larvae-luau/larvae/master/crates/larvae/larvae.schema.json
+# Local config for the transport-benchmark place (replaces benchmark/.darklua.json).
+# Run from benchmark/: `larvae process --config larvae.toml`.
+# Mirrors the old convert_require (path -> roblox, property indexing, rojo sourcemap).
+input = "src"
+output = "roblox"
+
+[requires]
+target = "roblox-instance"
+indexing_style = "property"
+sourcemap = "./sourcemap.json"

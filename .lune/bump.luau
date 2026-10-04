@@ -1,11 +1,11 @@
-local darklua_version = require("./libs/darklua_version")
+local larvae_version = require("./libs/larvae_version")
 local pesde_version = require("./libs/pesde_version")
 local stdio = require("@lune/stdio")
 
 local PESDE_CONFIG = "pesde.toml"
-local DARKLUA_CONFIG = "build/.darklua.json"
+local LARVAE_CONFIG = "larvae.toml"
 
-local curr_version = darklua_version.read_from(DARKLUA_CONFIG)
+local curr_version = larvae_version.read_from(LARVAE_CONFIG)
 local new_version = stdio.prompt("text" :: "text", `What version is being built? (Current version is {curr_version})`)
-darklua_version.write_to(DARKLUA_CONFIG, new_version)
+larvae_version.write_to(LARVAE_CONFIG, new_version)
 pesde_version.write_to(PESDE_CONFIG, new_version)
