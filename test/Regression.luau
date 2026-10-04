@@ -7,9 +7,11 @@ local fs = require("@lune/fs")
 local process = require("@lune/process")
 
 local Error = require("../src/Modules/Error")
+local Generator = require("../src/Generator")
 local Lexer = require("../src/Lexer")
 local Parser = require("../src/Parser")
 local Settings = require("../src/Settings")
+local StringParser = require("../src/Modules/String")
 
 local Passed = 0
 local Failed = 0
@@ -26,6 +28,11 @@ end
 
 local function Parse(Source: string): Parser.Body
 	return Parser.new("./", "regression.blink"):Parse(Source)
+end
+
+local function Rejects(Name: string, Source: string)
+	local Ok = pcall(Parse, Source)
+	Check(Name, Ok == false, "expected the parser to reject this")
 end
 
 local function FindDeclaration(Declarations: { Parser.Declaration }, Name: string): Parser.Declaration?
@@ -304,6 +311,184 @@ do
 	end
 	Check("All error codes resolve", AllNamed)
 	Check("Unknown error code errors", pcall(Error.GetNameFromCode, -1) == false)
+end
+
+-- 16. Malformed ranges and blocks are rejected at parse time
+do
+	Rejects("Inverted integer range", 'option ClientOutput = "a"\ntype A = u8(10..1)')
+	Rejects("Inverted float range", 'option ClientOutput = "a"\ntype A = f64(1.5..-1.5)')
+
+	local Ok, Ast = pcall(Parse, 'option ClientOutput = "a"\ntype A = u8(0..10)')
+	Check("Ordered range accepted", Ok == true)
+	if Ok then
+		local Declaration = FindDeclaration((Ast :: Parser.Body).Value.Declarations, "A")
+		local Range = (Declaration :: any).Value.Range
+		Check("Ordered range kept verbatim", Range ~= nil and Range.Min == 0 and Range.Max == 10)
+	end
+end
+
+-- 17. A stray closing brace no longer swallows the rest of the file
+do
+	Rejects("Stray top-level closing brace", 'option ClientOutput = "a"\ntype A = u8\n}\ntype B = u8')
+
+	local Ok, Ast = pcall(Parse, 'option ClientOutput = "a"\nscope Foo {\ntype A = u8\n}\ntype B = u8')
+	Check("Closed scope accepted", Ok == true)
+	if Ok then
+		local Declarations = (Ast :: Parser.Body).Value.Declarations
+		Check("Declarations after a scope survive", FindDeclaration(Declarations, "B") ~= nil)
+	end
+end
+
+-- 18. Unclosed blocks are reported instead of being accepted
+do
+	Rejects("Unclosed scope", 'option ClientOutput = "a"\nscope Foo {\ntype A = u8')
+	Rejects("Unclosed struct", 'option ClientOutput = "a"\nstruct Foo {\nA: u8')
+	Rejects("Unterminated block comment", 'option ClientOutput = "a"\n--[[[\ntype A = u8')
+
+	local Ok = pcall(Parse, 'option ClientOutput = "a"\n--[[ ok ]]\ntype A = u8\n-- trailing')
+	Check("Closed and line comments accepted", Ok == true)
+end
+
+-- 19. Reserved words are rejected as declaration names, not emitted as Luau
+do
+	Rejects("Event named after a keyword", 'option ClientOutput = "a"\nevent end {\n}')
+	Rejects("Function named after a keyword", 'option ClientOutput = "a"\nfunction type()')
+	Rejects("Struct named after a keyword", 'option ClientOutput = "a"\nstruct local {\nA: u8\n}')
+
+	local Ok = pcall(
+		Parse,
+		'option ClientOutput = "a"\nevent Fire {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync\n}'
+	)
+	Check("Ordinary event name accepted", Ok == true)
+end
+
+-- 20. Keyword and underscore struct fields survive code generation
+do
+	local Tree = Parse('option ClientOutput = "a"\noption ServerOutput = "b"\nstruct Weird {\n["end"]: u8,\n["_local"]: u8,\n["normal"]: u8\n}\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: Weird\n}')
+	local Server = Generator.Generate("Server", Tree)
+	local Client = Generator.Generate("Client", Tree)
+
+	Check("Keyword field emitted as a bracketed key", string.find(Server, `["end"]`, 1, true) ~= nil)
+	Check("Keyword field never emitted after a dot", string.find(Server, ".end", 1, true) == nil)
+	Check("Underscore field emitted verbatim", string.find(Server, "_local", 1, true) ~= nil)
+	Check("Ordinary field emitted after a dot", string.find(Server, ".normal", 1, true) ~= nil)
+	Check("Generator wraps serializer writes", string.find(Server, "Serialize(", 1, true) ~= nil)
+	Check("Generator wraps export reads", string.find(Server, "ExportRead(", 1, true) ~= nil)
+	Check("Generator wraps export writes", string.find(Server, "ExportWrite(", 1, true) ~= nil)
+
+	local function Identity(Code: string): (number?, number?)
+		local Version = string.match(Code, "local PROTOCOL_VERSION = (%d+)")
+		local Schema = string.match(Code, "local SCHEMA_ID = (%d+)")
+		return (Version and tonumber(Version)), (Schema and tonumber(Schema))
+	end
+
+	local ServerVersion, ServerSchema = Identity(Server)
+	local ClientVersion, ClientSchema = Identity(Client)
+	Check("Both halves declare the same protocol version", ServerVersion ~= nil and ServerVersion == ClientVersion)
+	Check("Both halves declare the same schema id", ServerSchema ~= nil and ServerSchema == ClientSchema)
+
+	local Other = Generator.Generate("Server", Parse('option ClientOutput = "a"\noption ServerOutput = "b"\nstruct Different {\nA: u8\n}\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: Different\n}'))
+	local _, OtherSchema = Identity(Other)
+	Check("A different schema yields a different id", OtherSchema ~= nil and OtherSchema ~= ServerSchema)
+end
+
+-- 21. Shared identifier and string policy
+do
+	Check("Escape leaves plain text alone", StringParser.Escape("abc") == "abc")
+	Check("Escape quotes", StringParser.Escape('a"b') == 'a\\"b')
+	Check("Escape backslashes", StringParser.Escape("a\\b") == "a\\\\b")
+	Check("Escape newlines", StringParser.Escape("a\nb") == "a\\nb")
+	Check("Escape tabs", StringParser.Escape("a\tb") == "a\\tb")
+
+	Check("Plain identifier is valid", StringParser.IsValidIdentifier("Foo"))
+	Check("Leading underscore is valid", StringParser.IsValidIdentifier("_Foo"))
+	Check("Trailing underscore is valid", StringParser.IsValidIdentifier("Foo_"))
+	Check("Leading digit is invalid", not StringParser.IsValidIdentifier("1Foo"))
+	Check("Keyword identifier is invalid", not StringParser.IsValidIdentifier("end"))
+	Check("Capitalised keyword is still valid", StringParser.IsValidIdentifier("End"))
+
+	local Util = require("../src/Generator/Util")
+	Check("FormatKey brackets a keyword", Util.FormatKey("type") == '["type"]')
+	Check("FormatIndex brackets a keyword", Util.FormatIndex("end") == '["end"]')
+	Check("FormatIndex keeps an underscore-prefixed name dotted", Util.FormatIndex("_local") == "._local")
+	Check("FormatIndex keeps an ordinary name dotted", Util.FormatIndex("normal") == ".normal")
+end
+
+-- 22. Wire-level guards are emitted into generated code
+local function Generate(Source: string, Context: "Server" | "Client"): string
+	return Generator.Generate(Context, Parse(Source))
+end
+
+do
+	local Ranged = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: u8(0..10)\n}',
+		"Server"
+	)
+	Check("Integer writes reject fractions", string.find(Ranged, "% 1 ~= 0", 1, true) ~= nil)
+	Check("Ranged writes emit both bounds in one guard", string.find(Ranged, "< 0 or", 1, true) ~= nil)
+	Check("Ranged writes emit the upper bound", string.find(Ranged, "> 10 then", 1, true) ~= nil)
+
+	local Bare = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: u8\n}',
+		"Server"
+	)
+	Check(
+		"Unranged u8 still guards its representable range",
+		string.find(Bare, "an integer between 0 and 255", 1, true) ~= nil
+	)
+
+	local Text = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: string\n}',
+		"Server"
+	)
+	Check("Variable strings check their length prefix", string.find(Text, "if Length > 65535 then error", 1, true) ~= nil)
+
+	local Mapped = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: map { [string]: u8 }\n}',
+		"Server"
+	)
+	Check(
+		"Maps guard their entry count",
+		string.find(Mapped, "A map cannot hold more than 65535 entries", 1, true) ~= nil
+	)
+
+	local Half = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: f16\n}',
+		"Client"
+	)
+	Check("f16 masks its exponent field", string.find(Half, "f16Exponent = f16Encoded // 0x400 % 0x20", 1, true) ~= nil)
+	Check("f16 decodes infinities by mantissa", string.find(Half, "f16Sign * math.huge", 1, true) ~= nil)
+	Check("f16 decodes subnormals via ldexp", string.find(Half, "math.ldexp(f16Mantissa / 0x400, -14)", 1, true) ~= nil)
+
+	local Optionals = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: (u8?)[1..3]\n}',
+		"Client"
+	)
+	Check("Variable arrays assign by index", string.find(Optionals, "Value[Index] =", 1, true) ~= nil)
+	Check(
+		"Array results are never compacted by table.insert",
+		string.find(Optionals, "table.insert(Value", 1, true) == nil
+	)
+
+	local Fixed = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: (u8?)[3]\n}',
+		"Server"
+	)
+	Check("Fixed arrays check their exact shape", string.find(Fixed, "to hold exactly 3 entries", 1, true) ~= nil)
+end
+
+-- 23. A schema that cannot fit in a single-byte id is rejected at compile time
+do
+	local Parts = { 'option ClientOutput = "a"', 'option ServerOutput = "b"' }
+	for Index = 1, 300 do
+		table.insert(Parts, "event Ping" .. Index .. " {From: Server, Type: Reliable, Call: SingleAsync}")
+	end
+
+	local Source = table.concat(Parts, "\n")
+	local Ok = pcall(function()
+		Generator.Generate("Server", Parse(Source))
+	end)
+	Check("Too many events for a byte id is rejected", Ok == false)
 end
 
 print(`\n{Passed} passed, {Failed} failed.`)

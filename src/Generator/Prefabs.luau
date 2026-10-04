@@ -24,6 +24,7 @@ type AssertPrefab = {
 	Lower: string,
 	Upper: string,
 	Exact: string?,
+	Combined: string?,
 }
 
 type AssertGenerator = (Variable: string, ...any) -> AssertPrefab
@@ -49,11 +50,18 @@ local Asserts = {
 		}
 	end,
 
+	-- `% 1 == 0` rejects fractions and NaN/inf, which `<`/`>` silently accept;
+	-- writing 1.5 or 0/0 into an integer slot truncates and corrupts every
+	-- later value in the batch.
 	integer = function(Variable: string, Min: number, Max: number): AssertPrefab
 		return {
-			Lower = `if {Variable} < {Min} then error(\`Expected "{Variable}" to be larger than or equal to {Min}, got \{{Variable}} instead.\`) end`,
-			Upper = `if {Variable} > {Max} then error(\`Expected "{Variable}" to be smaller than or equal to {Max}, got \{{Variable}} instead.\`) end`,
-			Exact = `if {Variable} ~= {Max} then error(\`Expected "{Variable}" to be equal to {Max}, got \{{Variable}\} instead.\`) end`,
+			Lower = `if not ({Variable} >= {Min} and {Variable} % 1 == 0) then error(\`Expected "{Variable}" to be an integer larger than or equal to {Min}, got \{{Variable}} instead.\`) end`,
+			Upper = `if not ({Variable} <= {Max} and {Variable} % 1 == 0) then error(\`Expected "{Variable}" to be an integer smaller than or equal to {Max}, got \{{Variable}} instead.\`) end`,
+			Exact = `if not ({Variable} == {Max} and {Variable} % 1 == 0) then error(\`Expected "{Variable}" to be an integer equal to {Max}, got \{{Variable}} instead.\`) end`,
+			-- One branch and one error site instead of three. This roughly halves
+			-- the guard code emitted per numeric field, which matters because it
+			-- is emitted per declaration on both sides of the wire.
+			Combined = `if {Variable} % 1 ~= 0 or {Variable} < {Min} or {Variable} > {Max} then error(\`Expected "{Variable}" to be an integer between {Min} and {Max}, got \{{Variable}} instead.\`) end`,
 		}
 	end,
 
@@ -124,7 +132,13 @@ local function GetTypeToUseByBits(UpperBits: number): TypePrefab
 	error("Value is too large to be written to a buffer.")
 end
 
-local function GeneratePrimitivePrefab(Type: string, Prefab: TypePrefab, AssertGenerator: AssertGenerator?): Generate
+local function GeneratePrimitivePrefab(
+	Type: string,
+	Prefab: TypePrefab,
+	AssertGenerator: AssertGenerator?,
+	DefaultMin: number?,
+	DefaultMax: number?
+): Generate
 	return function(
 		Declaration: Parser.Primitive,
 		Variable: string?,
@@ -143,11 +157,9 @@ local function GeneratePrimitivePrefab(Type: string, Prefab: TypePrefab, AssertG
 		local IsVariableSize = (Range and Range.Max ~= Range.Min)
 
 		local function GenerateValidation(Block: Block, Variable: string)
-			if Block == Write and WriteValidations ~= true then
-				return
-			end
-
-			if Block == Write and Type ~= "any" then
+			if Block == Write and Type ~= "any" and WriteValidations ~= true then
+				-- type identity is a debugging aid only
+			elseif Block == Write and Type ~= "any" then
 				Block:Compare(`typeof({Variable})`, `"{Type}"`, "Not")
 					:Line(`error(\`Expected {Variable} to be of type {Type}, got \{type({Variable})} instead.\`)`)
 					:End()
@@ -161,10 +173,15 @@ local function GeneratePrimitivePrefab(Type: string, Prefab: TypePrefab, AssertG
 				local Assert = AssertGenerator(Variable, Range.Min, Range.Max)
 				if not IsVariableSize and Assert.Exact then
 					Block:Line(Assert.Exact)
+				elseif Assert.Combined then
+					Block:Line(Assert.Combined)
 				else
 					Block:Line(Assert.Lower)
 					Block:Line(Assert.Upper)
 				end
+			elseif DefaultMin and DefaultMax then
+				local Assert = AssertGenerator(Variable, DefaultMin, DefaultMax)
+				Block:Line(Assert.Combined or Assert.Lower)
 			elseif Primitive == "Instance" and Class then
 				local Assert = AssertGenerator(Variable, Class)
 				if Block == Write then
@@ -185,7 +202,9 @@ end
 local function GenerateNumberGenerator(
 	Type: string,
 	Size: number,
-	Assert: AssertGenerator
+	Assert: AssertGenerator,
+	DefaultMin: number?,
+	DefaultMax: number?
 ): (TypePrefab, { Type: string, Generate: Generate })
 	local Prefab = {
 		Read = function(Variable: string, Block: Block)
@@ -198,70 +217,66 @@ local function GenerateNumberGenerator(
 
 	local Primitive = {
 		Type = "number",
-		Generate = GeneratePrimitivePrefab("number", Prefab, Assert),
+		Generate = GeneratePrimitivePrefab("number", Prefab, Assert, DefaultMin, DefaultMax),
 	}
 
 	return Prefab, Primitive
 end
 
+-- Values a primitive can represent even when the schema declares no range.
+-- Without these `buffer.writeu8(300, 1.5)` keeps the low bits and shifts every
+-- later value in the batch, so they are emitted regardless of WriteValidations.
 --> Numbers
-Types.u8, Primitives.u8 = GenerateNumberGenerator("u8", BYTE, Asserts.integer)
-Types.u16, Primitives.u16 = GenerateNumberGenerator("u16", SHORT, Asserts.integer)
-Types.u32, Primitives.u32 = GenerateNumberGenerator("u32", INTEGER, Asserts.integer)
+Types.u8, Primitives.u8 = GenerateNumberGenerator("u8", BYTE, Asserts.integer, 0, 255)
+Types.u16, Primitives.u16 = GenerateNumberGenerator("u16", SHORT, Asserts.integer, 0, 65535)
+Types.u32, Primitives.u32 =
+	GenerateNumberGenerator("u32", INTEGER, Asserts.integer, 0, 4294967295)
 
-Types.i8, Primitives.i8 = GenerateNumberGenerator("i8", BYTE, Asserts.integer)
-Types.i16, Primitives.i16 = GenerateNumberGenerator("i16", SHORT, Asserts.integer)
-Types.i32, Primitives.i32 = GenerateNumberGenerator("i32", INTEGER, Asserts.integer)
+Types.i8, Primitives.i8 = GenerateNumberGenerator("i8", BYTE, Asserts.integer, -128, 127)
+Types.i16, Primitives.i16 = GenerateNumberGenerator("i16", SHORT, Asserts.integer, -32768, 32767)
+Types.i32, Primitives.i32 =
+	GenerateNumberGenerator("i32", INTEGER, Asserts.integer, -2147483648, 2147483647)
 
 Types.f32, Primitives.f32 = GenerateNumberGenerator("f32", FLOAT, Asserts.float)
 Types.f64, Primitives.f64 = GenerateNumberGenerator("f64", DOUBLE, Asserts.float)
 
 Types.f16 = {
 	Read = function(Variable: string, Block: Block)
-		Types.u16.Read("Encoded", Block)
+		Types.u16.Read("f16Encoded", Block)
 		Block:Declare(Variable, true)
-		Block:Line(`local MantissaExponent = Encoded % 0x8000`)
-		Block:Compare("MantissaExponent", "0b0_11111_0000000000 ", "Equals")
-			:Compare("Encoded // 0x8000", "1", "Equals")
-			:Line(`{Variable} = -math.huge`)
-			:Branch("Default")
-			:Line(`{Variable} = math.huge`)
-			:End()
-			:Branch("Conditional", "MantissaExponent", "0b1_11111_0000000000  ", "Equals")
-			:Line(`{Variable} = 0 / 0`)
-			:Branch("Conditional", "MantissaExponent", "0b0_00000_0000000000  ", "Equals")
-			:Line(`{Variable} = 0`)
-			:Branch("Default")
-			:Lines({
-				"local Mantissa = MantissaExponent % 0x400\n",
-				"local Exponent = MantissaExponent // 0x400\n",
-				"local Fraction;\n",
-				"if Exponent == 0 then\n",
-				"	Fraction = Mantissa / 0x400\n",
-				"else\n",
-				"	Fraction = Mantissa / 0x800 + 0.5\n",
-				"end\n",
-				"local Result = math.ldexp(Fraction, Exponent - 14)\n",
-			}, Block.Indent + 1)
-			:Line(`{Variable} = if Encoded // 0x8000 == 1 then -Result else Result`)
-			:End()
+		Block:Lines({
+			`local f16Exponent = f16Encoded // 0x400 % 0x20\n`,
+			`local f16Mantissa = f16Encoded % 0x400\n`,
+			`local f16Sign = if f16Encoded >= 0x8000 then -1 else 1\n`,
+			`if f16Exponent == 31 then\n`,
+			`	-- a zero mantissa is infinity, any other mantissa is NaN\n`,
+			`	{Variable} = if f16Mantissa == 0 then f16Sign * math.huge else 0 / 0\n`,
+			`elseif f16Exponent == 0 then\n`,
+			`	-- zero or subnormal, value is mantissa * 2^-24\n`,
+			`	{Variable} = f16Sign * math.ldexp(f16Mantissa / 0x400, -14)\n`,
+			`else\n`,
+			`	{Variable} = f16Sign * math.ldexp(1 + f16Mantissa / 0x400, f16Exponent - 15)\n`,
+			`end\n`,
+		})
 	end,
 	Write = function(Value: string, Block: Block)
 		local Allocation = Block:Allocate(HALF_FLOAT)
-		Block:Compare(Value, "65504", "Greater")
+		Block:Compare(Value, "65520", "Greater")
 			:Line(`buffer.writeu16({SEND_BUFFER}, {Allocation}, 0b0_11111_0000000000)`)
-			:Branch("Conditional", Value, "-65504", "Less")
+			:Branch("Conditional", Value, "-65520", "Less")
 			:Line(`buffer.writeu16({SEND_BUFFER}, {Allocation}, 0b1_11111_0000000000)`)
 			:Branch("Conditional", Value, Value, "Not")
 			:Line(`buffer.writeu16({SEND_BUFFER}, {Allocation}, 0b1_11111_0000000001)`)
 			:Branch("Conditional", Value, "0", "Equals")
-			:Line(`buffer.writeu16({SEND_BUFFER}, {Allocation}, 0)`)
+			:Line(
+				`if 1 / {Value} < 0 then buffer.writeu16({SEND_BUFFER}, {Allocation}, 0x8000) else buffer.writeu16({SEND_BUFFER}, {Allocation}, 0) end`
+			)
 			:Branch("Default")
 			:Line(`local float = {Value}`)
 			:Lines({
 				"local Abosulte = math.abs(float)\n",
 				"local Interval = math.ldexp(1, math.floor(math.log(Abosulte, 2)) - 10)\n",
-				"local RoundedValue = (Abosulte // Interval) * Interval\n",
+				"local RoundedValue = math.round(Abosulte / Interval) * Interval\n",
 				"local Fraction, Exponent = math.frexp(RoundedValue)\n",
 				"Exponent += 14\n",
 				"local Mantissa = math.round(if Exponent <= 0\n",
@@ -314,6 +329,7 @@ do
 			local LengthType = GetTypeToUse(Upper)
 
 			LengthType.Read("Length", Block)
+			Block:Line(`if Length > {Upper} then error(\`Expected "{Variable}" to be at most {Upper} bytes, got Length bytes\`) end`)
 			Block:Line(`{Block:Declare(Variable)} = buffer.readstring({RECIEVE_BUFFER}, Read(Length), Length)`)
 		end,
 		Write = function(Value: string, Block: Block, Range: NumberRange?)
@@ -326,6 +342,7 @@ do
 			local LengthType = GetTypeToUse(Upper)
 
 			Block:Line(`local Length = #{Value}`)
+			Block:Line(`if Length > {Upper} then error(\`Expected "{Value}" to be at most {Upper} bytes, got Length bytes\`) end`)
 			LengthType.Write("Length", Block)
 			Block:Line(`Allocate(Length)`)
 			Block:Line(`buffer.writestring({SEND_BUFFER}, {SEND_POSITION}, {Value}, Length)`)
@@ -385,6 +402,7 @@ do
 			local Upper = Range and Range.Max or (2 ^ 16 - 1)
 			local LengthType = GetTypeToUse(Upper)
 			LengthType.Read("Length", Block)
+			Block:Line(`if Length > {Upper} then error(\`Expected "{Variable}" to be at most {Upper} bytes, got Length bytes\`) end`)
 			Block:Line(`{Block:Declare(Variable)} = buffer.create(Length)`)
 			Block:Line(`buffer.copy({Variable}, 0, {RECIEVE_BUFFER}, Read(Length), Length)`)
 		end,
@@ -397,6 +415,7 @@ do
 			local Upper = Range and Range.Max or (2 ^ 16 - 1)
 			local LengthType = GetTypeToUse(Upper)
 			Block:Line(`local Length = buffer.len({Value})`)
+			Block:Line(`if Length > {Upper} then error(\`Expected "{Value}" to be at most {Upper} bytes, got Length bytes\`) end`)
 			LengthType.Write("Length", Block)
 			Block:Line(`Allocate(Length)`)
 			Block:Line(`buffer.copy({SEND_BUFFER}, {SEND_POSITION}, {Value}, 0, Length)`)
@@ -413,28 +432,25 @@ end
 do
 	Types.CFrame = {
 		Read = function(Variable: string, Block: Block, _, Components: { string }?)
-			local Prefab: TypePrefab = Types.f32
-			if Components then
-				Prefab = Types[Components[1]]
-			end
+			-- documented as `CFrame<position, rotation>`
+			local Position = (Components and Components[1]) or "f32"
+			local Rotation: TypePrefab = Types[(Components and Components[2]) or "f32"] or Types.f32
 
-			Types.vector.Read("Position", Block, nil, Components)
-			Prefab.Read("rX", Block)
-			Prefab.Read("rY", Block)
-			Prefab.Read("rZ", Block)
+			Types.vector.Read("Position", Block, nil, { Position })
+			Rotation.Read("rX", Block)
+			Rotation.Read("rY", Block)
+			Rotation.Read("rZ", Block)
 			Block:Line(`{Block:Declare(Variable)} = CFrame.new(Position) * CFrame.fromOrientation(rX, rY, rZ)`)
 		end,
 		Write = function(Value: string, Block: Block, _, Components: { string }?)
-			local Prefab: TypePrefab = Types.f32
-			if Components then
-				Prefab = Types[Components[1]]
-			end
+			local Position = (Components and Components[1]) or "f32"
+			local Rotation: TypePrefab = Types[(Components and Components[2]) or "f32"] or Types.f32
 
-			Types.vector.Write(`{Value}.Position`, Block, nil, Components)
+			Types.vector.Write(`{Value}.Position`, Block, nil, { Position })
 			Block:Line(`local rX, rY, rZ = {Value}:ToOrientation()`)
-			Prefab.Write("rX", Block)
-			Prefab.Write("rY", Block)
-			Prefab.Write("rZ", Block)
+			Rotation.Write("rX", Block)
+			Rotation.Write("rY", Block)
+			Rotation.Write("rZ", Block)
 		end,
 	}
 

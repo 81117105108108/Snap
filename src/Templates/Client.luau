@@ -14,8 +14,10 @@ local function StepReplication()
         return
     end
 
-    local Buffer = buffer.create(SendCursor)
-    buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)
+    local Buffer = buffer.create(SendCursor + HANDSHAKE_BYTES)
+    buffer.writeu8(Buffer, 0, PROTOCOL_VERSION)
+    buffer.writeu32(Buffer, 1, SCHEMA_ID)
+    buffer.copy(Buffer, HANDSHAKE_BYTES, SendBuffer, 0, SendCursor)
     Reliable:FireServer(Buffer, SendInstances)
 
     SendSize = 64

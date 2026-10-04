@@ -223,7 +223,18 @@ function Lexer.GetNextToken(self: Lexer, DontAdvanceCursor: boolean?, StartAt: n
 				if closeEnd ~= nil then
 					commentEnd = closeEnd
 				else
-					commentEnd = size -- Unclosed block comment spans to EOF
+					-- An unterminated `--[==[ ]==]` is a parse error, not an implicit
+					-- "comment to end of file". Highlighting tolerates it so the
+					-- editor can still paint the rest of the file.
+					if not isHighlighting then
+						emitUnexpectedError(
+							source,
+							commentStart,
+							size,
+							"Unclosed block comment, expected a matching close"
+						)
+					end
+					commentEnd = size
 				end
 			else
 				-- Single line comment: scan to newline or EOF

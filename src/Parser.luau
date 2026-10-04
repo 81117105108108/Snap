@@ -5,6 +5,7 @@
 local Error = require("./Modules/Error")
 local Lexer = require("./Lexer")
 local PathParser = require("./Modules/Path")
+local StringParser = require("./Modules/String")
 local Table = require("./Modules/Table")
 
 local Settings = require("./Settings")
@@ -625,6 +626,19 @@ function Parser.NumberRange(self: Parser, Token: Lexer.Token, Bounds: NumberRang
 
 	local Range = ParseRange()
 
+	--> An inverted range (10..1) can never hold a value, and silently
+	--> accepting it produces a type that rejects every input at runtime.
+	if Range.Min > Range.Max then
+		Error.new(Error.AnalyzeInvalidRange, self.Source, "Inverted range", self.File)
+			:Primary(
+				Token,
+				`Expected a minimum less than or equal to the maximum, got {Range.Min} > {Range.Max}`
+			)
+			:Emit()
+
+		error("never")
+	end
+
 	--> check int
 	if Integer and (IsInteger(Range.Min) == false or IsInteger(Range.Max) == false) then
 		Error.new(Error.AnalyzeInvalidRange, self.Source, "Expected an integer", self.File)
@@ -964,12 +978,41 @@ end
 function Parser.Declarations(self: Parser): { Declaration }
 	local Declarations = {}
 	while true do
-		if self:TryConsume("EndOfFile") then
+		local EndOfFile: Token? = self:TryConsume("EndOfFile")
+		if EndOfFile then
+			-- Reaching EOF with a scope still open means its closing brace is
+			-- missing. Silently accepting it dropped every declaration after
+			-- the unclosed block.
+			local Open = self.Scope
+			if Open and Open.Parent ~= nil then
+				Error.new(Error.ParserUnexpectedEndOfFile, self.Source, "Unclosed block", self.File)
+					:Primary(EndOfFile, `Expected a closing brace for "{Open.Name.Value}"`)
+					:Emit()
+
+				error("never")
+			end
+
 			break
 		end
 
-		if self.Scope and self:TryConsume("CloseBraces") then
-			break
+		-- A closing brace is only meaningful inside a declaration block. At
+		-- the top level it used to fall through and silently drop every
+		-- declaration that followed it.
+		if self.Scope then
+			local Braces: Token? = self:TryConsume("CloseBraces")
+			if Braces then
+				-- `Parser.Parse` seeds a root scope with no parent, so a brace
+				-- that would close it is unmatched.
+				if self.Scope.Parent == nil then
+					Error.new(Error.ParserUnexpectedToken, self.Source, "Unexpected closing brace", self.File)
+						:Primary(Braces, `There is no open block to close here`)
+						:Emit()
+
+					error("never")
+				end
+
+				break
+			end
 		end
 
 		--> Is an import?
@@ -988,6 +1031,18 @@ function Parser.Declarations(self: Parser): { Declaration }
 		local Keyword = self:Consume("Keyword")
 		local Name = self:ConsumeText()
 		local Declaration: Declaration
+
+		-- A declaration name becomes a generated Luau symbol, so a reserved
+		-- word here would emit code the target compiler rejects. `option`
+		-- values are plain strings rather than symbols, so they are exempt.
+		if Keyword.Value ~= "option" and StringParser.IsReserved(Name.Value) then
+			Error.new(Error.AnalyzeReservedIdentifier, self.Source, "Reserved identifier", self.File)
+				:Primary(Name, `"{Name.Value}" is a reserved word in generated Luau`)
+				:Secondary(Keyword, "Declared here")
+				:Emit()
+
+			error("never")
+		end
 
 		if Keyword.Value == "option" then
 			Error.new(Error.AnalyzeOptionAfterStart, self.Source, "Option set after start of file", self.File)

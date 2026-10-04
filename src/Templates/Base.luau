@@ -92,6 +92,57 @@ local function Allocate(Bytes: number)
     return SendOffset
 end
 
+-- Runs a generated serializer as a transaction. A serializer that throws
+-- part-way through would otherwise leave its header byte and any references it
+-- appended behind in the batch, so every later event in that batch decodes
+-- against a corrupted cursor. Only the cursors are restored: if the buffer grew
+-- during the failed write the larger buffer is kept, which stays consistent.
+local function Serialize(WriteFunction: (...any) -> (), ...: any)
+    local Cursor = SendCursor
+    local Instances = #SendInstances
+
+    local Success, Message = pcall(WriteFunction, ...)
+
+    if not Success then
+        SendCursor = Cursor
+        SendOffset = Cursor
+        while #SendInstances > Instances do
+            table.remove(SendInstances)
+        end
+
+        error(Message, 0)
+    end
+end
+
+-- Export helpers. These are user-invoked rather than on the per-event hot path,
+-- so they may allocate a results table in exchange for restoring borrowed state
+-- on every exit path. Without this, an export that throws part-way through
+-- leaves the receive cursor pointing into the export's own buffer, which breaks
+-- every remaining event in the batch it was called from.
+local function ExportRead(ReadFunction: (...any) -> ...any, ...: any): ...any
+    local Cursor, Buffer, InstanceCursor = RecieveCursor, RecieveBuffer, RecieveInstanceCursor
+    local Results = table.pack(pcall(ReadFunction, ...))
+
+    if not Results[1] then
+        RecieveCursor, RecieveBuffer, RecieveInstanceCursor = Cursor, Buffer, InstanceCursor
+        error(Results[2], 0)
+    end
+
+    return table.unpack(Results, 2, Results.n)
+end
+
+local function ExportWrite(WriteFunction: (...any) -> ...any, ...: any): ...any
+    local Previous = Save()
+    local Results = table.pack(pcall(WriteFunction, ...))
+    Load(Previous)
+
+    if not Results[1] then
+        error(Results[2], 0)
+    end
+
+    return table.unpack(Results, 2, Results.n)
+end
+
 local function CreateQueue(): Queue
     return {
         head = nil,

@@ -1,4 +1,5 @@
 local Parser = require("../Parser")
+local StringParser = require("../Modules/String")
 
 type Scope = Parser.Scope
 
@@ -27,26 +28,27 @@ end
 
 local function GenerateEnumLiterals(Variants: { string }, Separator: string?): string
 	local Literals = {}
-	for Index, EnumItem in Variants do
-		table.insert(Literals, `"{EnumItem}"`)
+	for _, EnumItem in Variants do
+		table.insert(Literals, `"{StringParser.Escape(EnumItem)}"`)
 	end
 	return `{table.concat(Literals, Separator or " | ")}`
 end
 
+--- Returns whether `Identifier` can be emitted verbatim after a `.` in Luau.
 local function IsValidIdentifier(Identifier: string): boolean
-	return Identifier:match("%a%w*") == Identifier
+	return StringParser.IsValidIdentifier(Identifier)
 end
 
 local function FormatKey(Key: string): string
 	if not IsValidIdentifier(Key) then
-		return `["{Key}"]`
+		return `["{StringParser.Escape(Key)}"]`
 	end
 	return Key
 end
 
 local function FormatIndex(Index: string): string
 	if not IsValidIdentifier(Index) then
-		return `["{Index}"]`
+		return `["{StringParser.Escape(Index)}"]`
 	end
 	return `.{Index}`
 end
@@ -57,6 +59,7 @@ return {
 	GetScopePrefix = GetScopePrefix,
 	GetScopeIndent = GetScopeIndent,
 	GenerateEnumLiterals = GenerateEnumLiterals,
+	EscapeString = StringParser.Escape,
 	IsValidIdentifier = IsValidIdentifier,
 	FormatKey = FormatKey,
 	FormatIndex = FormatIndex,
