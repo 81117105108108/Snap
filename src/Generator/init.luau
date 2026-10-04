@@ -837,18 +837,42 @@ function Declarations.Array(Declaration: Parser.Array, Read: Blocks.Block, Write
 	local IsVariableSize = (Lower ~= Upper)
 
 	--> Length
+	-- For variable arrays this is the value serialized as the length prefix
+	-- and used as the write-loop bound. It defaults to `#`, which is only
+	-- correct for dense tables.
+	local LengthValue = `#{Variable}`
 	if IsVariableSize then
+		-- The logical length of a sparse table is its highest integer key, not
+		-- `#`, which stops at the first hole. Only optional elements can
+		-- validly hold holes, so dense (non-optional) arrays keep the cheap
+		-- `#` while optional ones scan for their true length. Writing `#`
+		-- here would silently truncate sparse input behind a wrong prefix.
+		if Of.Type == "Optional" then
+			local LengthVariable = `SparseLength_{Write.Indent}`
+			local KeyVariable = `SparseKey_{Write.Indent}`
+			Write:Line(`local {LengthVariable} = #{Variable}`)
+			Write:Line(`for {KeyVariable} in {Variable} do`)
+			Write:Line(
+				`if type({KeyVariable}) == "number" and {KeyVariable} % 1 == 0 and {KeyVariable} > {LengthVariable} then {LengthVariable} = {KeyVariable} end`,
+				Write.Indent + 1
+			)
+			Write:Line(`end`)
+			LengthValue = LengthVariable
+		end
 		local LengthType = Prefabs.GetTypeToUse(Upper)
 		LengthType.Read("Length", Read)
 		local Assert = Prefabs.Asserts.integer("Length", Lower, Upper)
 
 		Read:Line(Assert.Lower)
 		Read:Line(Assert.Upper)
-		Write:Line(`if #{Variable} < {Lower} or #{Variable} > {Upper} then error(\`Expected "{Variable}" to hold between {Lower} and {Upper} entries, got {#{Variable}} instead.\`) end`)
-		LengthType.Write(`#{Variable}`, Write)
+		Write:Line(`if {LengthValue} < {Lower} or {LengthValue} > {Upper} then error(\`Expected "{Variable}" to hold between {Lower} and {Upper} entries, got \{{LengthValue}} instead.\`) end`)
+		LengthType.Write(LengthValue, Write)
 	else
 		Read:Line(`local Length = {Upper}`)
-		Write:Line(`if #{Variable} ~= {Upper} then error(\`Expected "{Variable}" to hold exactly {Upper} entries, got {#{Variable}} instead.\`) end`)
+		-- Upper bound only: holes and trailing nils are legitimate values for
+		-- optional elements, and `#` stops at the first hole, so an exact
+		-- `#` check would reject values the fixed loop below handles fine.
+		Write:Line(`if #{Variable} > {Upper} then error(\`Expected "{Variable}" to hold at most {Upper} entries, got {#{Variable}} instead.\`) end`)
 	end
 
 	--> Array
@@ -856,7 +880,7 @@ function Declarations.Array(Declaration: Parser.Array, Read: Blocks.Block, Write
 
 	--> Body
 	Read = Read:Loop("Index = 1", "Length")
-	Write = Write:Loop("Index = 1", IsVariableSize and `#{Variable}` or Upper)
+	Write = Write:Loop("Index = 1", IsVariableSize and LengthValue or Upper)
 
 	Write:Line(`local {Iterator} = {Variable}[Index]`)
 	Generators.UserType(Of, Read, Write, Iterator)
@@ -1049,12 +1073,14 @@ function Generators.Export(Declaration: Type)
 	-- The bodies below keep their own save/restore, but a throw between the two
 	-- would skip the restore. `ExportRead`/`ExportWrite` wrap them so borrowed
 	-- send/receive state is restored on the failure path too.
-	local Read = Blocks.Function(`{Name}_Read`, "Buffer: buffer", `({Export})`, true)
-	local Write = Blocks.Function(`{Name}_Write`, `{Values}`, `(buffer)`, true)
+	-- Localised so the inner (de)serializers become locals declared ahead of
+	-- the export table: the public wrappers close over them, and table fields
+	-- are not visible to each other while the table is being constructed.
+	local Read = Blocks.Function(`{Name}_Read`, "Buffer: buffer", `({Export})`, false, true)
+	local Write = Blocks.Function(`{Name}_Write`, `{Values}`, `(buffer)`, false, true)
 
 	local Body = Builder.new()
 	local Indent = Util.GetScopeIndent(Scope)
-	Body.Push(`{Name} = \{`, 0, Indent)
 
 	--> Overwrite buffer
 	Read:Comment("Buffer overwrite")
@@ -1102,24 +1128,31 @@ function Generators.Export(Declaration: Type)
 	Read:Return(Returns)
 	Write:Return("Result")
 
-	Read:End():Wrap("", ",")
+	Read:End()
 	Write:End()
 
+	-- The inner (de)serializers live inside a per-export closure: the public
+	-- wrappers close over them as locals, which table fields cannot do while
+	-- their own table is being constructed.
+	Body.Push(`{Name} = (function()`, 0, Indent)
+	Body.PushLines(Read.Content, 0, Indent + 1)
+	Body.PushLines(Write.Content, 0, Indent + 1)
+
 	-- Public entry points. These are the only names the generated API exposes.
-	Body.Push(`{Casing.Read} = function(Buffer: buffer): ({Export})`, 0, Indent + 1)
-	Body.Push(`return ExportRead({Name}_Read, Buffer)`, 0, Indent + 2)
-	Body.Push("end,", 0, Indent + 1)
+	Body.Push(`return \{`, 0, Indent + 1)
+	Body.Push(`{Casing.Read} = function(Buffer: buffer): ({Export})`, 0, Indent + 2)
+	Body.Push(`return ExportRead({Name}_Read, Buffer)`, 0, Indent + 3)
+	Body.Push("end,", 0, Indent + 2)
 	-- `Values` is the annotated parameter list ("Value: Byte"), but the forward
 	-- call needs the bare name.
 	local ValueName = string.match(Values, "^[%a_][%w_]*") or Values
 
-	Body.Push(`{Casing.Write} = function({Values}): (buffer)`, 0, Indent + 1)
-	Body.Push(`return ExportWrite({Name}_Write, {ValueName})`, 0, Indent + 2)
-	Body.Push("end,", 0, Indent + 1)
-
-	Body.PushLines(Read.Content, 0, Indent + 1)
-	Body.PushLines(Write.Content, 0, Indent + 1)
-	Body.Push(`\},`, 0, Indent)
+	Body.Push(`{Casing.Write} = function({Values}): (buffer)`, 0, Indent + 2)
+	Body.Push(`return ExportWrite({Name}_Write, {ValueName})`, 0, Indent + 3)
+	Body.Push("end,", 0, Indent + 2)
+	-- No trailing comma: this table is returned, not embedded in another one.
+	Body.Push(`\}`, 0, Indent + 1)
+	Body.Push(`end)(),`, 0, Indent)
 
 	local BodyLines = Body.DumpLines()
 

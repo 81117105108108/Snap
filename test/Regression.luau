@@ -392,6 +392,18 @@ do
 	Check("A different schema yields a different id", OtherSchema ~= nil and OtherSchema ~= ServerSchema)
 end
 
+-- 20b. Export tables close over locals in a per-export closure, because table
+-- fields cannot see each other while their own table is being constructed.
+-- (A wrapper referencing a field name resolves to a nil global, so every
+-- export call would fail at runtime.)
+do
+	local Tree = Parse('option ClientOutput = "a"\noption ServerOutput = "b"\nexport type E = u8\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: E\n}')
+	local ExportServer = Generator.Generate("Server", Tree)
+	Check("Export bodies close over locals in a closure", string.find(ExportServer, "= (function()", 1, true) ~= nil)
+	Check("Export closures return their table", string.find(ExportServer, "end)(),", 1, true) ~= nil)
+	Check("Export inner functions are locals", string.find(ExportServer, "local function E_Read", 1, true) ~= nil)
+end
+
 -- 21. Shared identifier and string policy
 do
 	Check("Escape leaves plain text alone", StringParser.Escape("abc") == "abc")
@@ -461,7 +473,7 @@ do
 	Check("f16 decodes subnormals via ldexp", string.find(Half, "math.ldexp(f16Mantissa / 0x400, -14)", 1, true) ~= nil)
 
 	local Optionals = Generate(
-		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: (u8?)[1..3]\n}',
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: u8?[1..3]\n}',
 		"Client"
 	)
 	Check("Variable arrays assign by index", string.find(Optionals, "Value[Index] =", 1, true) ~= nil)
@@ -470,11 +482,27 @@ do
 		string.find(Optionals, "table.insert(Value", 1, true) == nil
 	)
 
+	-- The write side (sender's module) carries the length logic.
+	local OptionalsWrite = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: u8?[1..3]\n}',
+		"Server"
+	)
+	Check(
+		"Optional variable arrays scan for their true length",
+		string.find(OptionalsWrite, "SparseLength_", 1, true) ~= nil
+	)
+
 	local Fixed = Generate(
 		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: (u8?)[3]\n}',
 		"Server"
 	)
-	Check("Fixed arrays check their exact shape", string.find(Fixed, "to hold exactly 3 entries", 1, true) ~= nil)
+	Check("Fixed arrays reject over-long input", string.find(Fixed, "to hold at most 3 entries", 1, true) ~= nil)
+
+	local Dense = Generate(
+		'option ClientOutput = "a"\noption ServerOutput = "b"\nevent Ping {\nFrom: Server,\nType: Reliable,\nCall: SingleAsync,\nData: u8[1..3]\n}',
+		"Server"
+	)
+	Check("Dense variable arrays keep the cheap length", string.find(Dense, "SparseLength_", 1, true) == nil)
 end
 
 -- 23. A schema that cannot fit in a single-byte id is rejected at compile time
