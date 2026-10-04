@@ -259,6 +259,53 @@ do
 	end)
 end
 
+-- 14. Path classification covers UNC roots and drive letters
+do
+	local PathParser = require("../src/Modules/Path")
+	Check("UNC path is absolute", PathParser.PathType("\\\\server\\share\\file.blink") == "absolute")
+	Check("Drive path is absolute", PathParser.PathType("C:/dir/file.blink") == "absolute")
+	Check("Slash path is absolute", PathParser.PathType("/dir/file.blink") == "absolute")
+	Check("Bare file is relative", PathParser.PathType("file.blink") == "relative")
+	Check("Dotted relative stays relative", PathParser.PathType("./dir/file.blink") == "relative")
+end
+
+-- 15. Every error code resolves to a name; unknown codes still error
+do
+	local Codes = {
+		Error.LexerUnexpectedToken,
+		Error.ParserUnexpectedEndOfFile,
+		Error.ParserUnexpectedToken,
+		Error.ParserUnknownOption,
+		Error.ParserUnexpectedSymbol,
+		Error.ParserExpectedExtraToken,
+		Error.AnalyzeReferenceInvalidType,
+		Error.AnalyzeInvalidOptionalType,
+		Error.AnalyzeNestedMap,
+		Error.AnalyzeDuplicateField,
+		Error.AnalyzeReservedIdentifier,
+		Error.AnalyzeNestedScope,
+		Error.AnalyzeUnknownReference,
+		Error.AnalyzeInvalidRangeType,
+		Error.AnalyzeInvalidRange,
+		Error.AnalyzeDuplicateDeclaration,
+		Error.AnalyzeDuplicateTypeGeneric,
+		Error.AnalyzeInvalidGenerics,
+		Error.AnalyzeInvalidExport,
+		Error.AnalyzeUnknownImport,
+		Error.AnalyzeErrorWhileImporting,
+		Error.AnalyzeOptionAfterStart,
+	}
+	local AllNamed = true
+	for _, Code in Codes do
+		local Ok, Name = pcall(Error.GetNameFromCode, Code)
+		if not Ok or type(Name) ~= "string" or #Name == 0 then
+			AllNamed = false
+		end
+	end
+	Check("All error codes resolve", AllNamed)
+	Check("Unknown error code errors", pcall(Error.GetNameFromCode, -1) == false)
+end
+
 print(`\n{Passed} passed, {Failed} failed.`)
 if Failed > 0 then
 	process.exit(1)

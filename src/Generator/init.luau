@@ -104,26 +104,14 @@ local Channels: { [string]: { Count: number, Listening: boolean } } = {
 local Types = Prefabs.Types
 local Primitives = Prefabs.Primitives
 
-local function IsValidIdentifier(Identifier: string): boolean
-	return Identifier:match("%a%w*") == Identifier
-end
+local FormatKey = Util.FormatKey
+local FormatIndex = Util.FormatIndex
 
-local function FormatKey(Key: string): string
-	if not IsValidIdentifier(Key) then
-		return `["{Key}"]`
-	end
-	return Key
-end
-
-local function FormatIndex(Index: string): string
-	if not IsValidIdentifier(Index) then
-		return `["{Index}"]`
-	end
-	return `.{Index}`
-end
-
-local function BitIndexToHex(Index: number): string
-	return `0x{string.format("%x", 2 ^ Index)}`
+-- Set flags are partitioned in chunks of up to 32 bits; precompute every
+-- mask once instead of evaluating `2 ^ Index` + string.format per flag.
+local BIT_INDEX_HEX: { string } = {}
+for Index = 0, 31 do
+	BIT_INDEX_HEX[Index] = `0x{string.format("%x", 2 ^ Index)}`
 end
 
 --> Declaration functions
@@ -160,7 +148,7 @@ function Declarations.Set(Declaration: Parser.Set, Read: Blocks.Block, Write: Bl
 				local Flag = Flags[FlagIndex]
 
 				Read:EmptyDeclare(Flag)
-				Read:Line(`{Variable}{FormatIndex(Flag)} = bit32.btest(SET_BITS, {BitIndexToHex(Index - 1)});`)
+				Read:Line(`{Variable}{FormatIndex(Flag)} = bit32.btest(SET_BITS, {BIT_INDEX_HEX[Index - 1]});`)
 
 				FlagIndex += 1
 			end
@@ -181,7 +169,7 @@ function Declarations.Set(Declaration: Parser.Set, Read: Blocks.Block, Write: Bl
 
 			for Index = 1, Partition do
 				local Flag = Flags[FlagIndex]
-				Write:Line(`if {Variable}{FormatIndex(Flag)} == true then SET_BITS += {BitIndexToHex(Index - 1)} end`)
+				Write:Line(`if {Variable}{FormatIndex(Flag)} == true then SET_BITS += {BIT_INDEX_HEX[Index - 1]} end`)
 				FlagIndex += 1
 			end
 
@@ -195,8 +183,7 @@ end
 function Declarations.Enum(Declaration: Parser.Enum, Read: Blocks.Block, Write: Blocks.Block, Variable: string)
 	local Value = Declaration.Value
 	local Enums = Value.Values
-	local Literal = Util.GenerateEnumLiterals(Enums)
-	Literal = string.gsub(Literal, "|", "or")
+	local Literal = Util.GenerateEnumLiterals(Enums, " or ")
 
 	--> Read body
 	Read:Line(`{Read:Declare(Variable)} = true :: any`)
@@ -1005,12 +992,7 @@ function Generators.Type(Declaration: Type)
 
 	local Generics = ""
 	if Value.Generics then
-		local Types = {}
-		for _, Generic in Value.Generics.List do
-			table.insert(Types, Generic)
-		end
-
-		Generics = `<{table.concat(Types, ",")}>`
+		Generics = `<{table.concat(Value.Generics.List, ",")}>`
 	end
 
 	--> Write luau export

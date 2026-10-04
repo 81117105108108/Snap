@@ -94,6 +94,15 @@ local Error = {
 
 Error.__index = Error
 
+-- Reverse lookup for GetNameFromCode, built once instead of scanning the
+-- whole Error table (including its methods) on every call.
+local CodeNames: { [number]: string } = {}
+for Name, Code in Error do
+	if type(Code) == "number" then
+		CodeNames[Code] = Name
+	end
+end
+
 export type Class = typeof(setmetatable(
 	{} :: {
 		Labels: { Label },
@@ -131,10 +140,9 @@ function Error.SetCompact(Value: boolean)
 end
 
 function Error.GetNameFromCode(From: number): string
-	for Name, Code in Error do
-		if Code == From then
-			return Name
-		end
+	local Name = CodeNames[From]
+	if Name then
+		return Name
 	end
 
 	error(`Unknown error code: {From}`)

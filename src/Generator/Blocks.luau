@@ -312,7 +312,7 @@ function Connection.new(Signal: string, Arguments: string): Block
 	return Block
 end
 
-function Connection.End(self: Block, Return: string?): Block
+function Connection.End(self: Block): Block
 	self:Line("end)", 0)
 	return self
 end

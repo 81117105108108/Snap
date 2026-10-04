@@ -6,8 +6,10 @@
 local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 
-local Compile = require("@self/Utility/Compile")
-local Watch = require("@self/Utility/Watch")
+-- Compiler modules are required lazily so --help/--version/arg-errors don't
+-- pay ~30ms of module loading.
+local Compile: typeof(require("@self/Utility/Compile"))
+local Watch: typeof(require("@self/Utility/Watch"))
 
 ---- Settings ----
 
@@ -123,6 +125,7 @@ if Arguments.Version then
 end
 
 if not Arguments.Watch then
+	Compile = require("@self/Utility/Compile")
 	local CompileOptions: Compile.CompileOptions = {
 		Debug = (_G.RELEASE == nil) or Arguments.Statistics,
 		Silent = Arguments.Silent,
@@ -133,6 +136,7 @@ if not Arguments.Watch then
 
 	Compile.Compile(Path, CompileOptions)
 else
+	Watch = require("@self/Utility/Watch")
 	Watch.Watch(Path)
 end
 

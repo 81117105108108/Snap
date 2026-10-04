@@ -25,12 +25,30 @@ local function GetExportName(Name: string, CurrentScope: Scope): string
 	return `{GetScopePrefix(nil, false, CurrentScope)}{Name}`
 end
 
-local function GenerateEnumLiterals(Variants: { string }): string
+local function GenerateEnumLiterals(Variants: { string }, Separator: string?): string
 	local Literals = {}
 	for Index, EnumItem in Variants do
 		table.insert(Literals, `"{EnumItem}"`)
 	end
-	return `{table.concat(Literals, " | ")}`
+	return `{table.concat(Literals, Separator or " | ")}`
+end
+
+local function IsValidIdentifier(Identifier: string): boolean
+	return Identifier:match("%a%w*") == Identifier
+end
+
+local function FormatKey(Key: string): string
+	if not IsValidIdentifier(Key) then
+		return `["{Key}"]`
+	end
+	return Key
+end
+
+local function FormatIndex(Index: string): string
+	if not IsValidIdentifier(Index) then
+		return `["{Index}"]`
+	end
+	return `.{Index}`
 end
 
 return {
@@ -39,4 +57,7 @@ return {
 	GetScopePrefix = GetScopePrefix,
 	GetScopeIndent = GetScopeIndent,
 	GenerateEnumLiterals = GenerateEnumLiterals,
+	IsValidIdentifier = IsValidIdentifier,
+	FormatKey = FormatKey,
+	FormatIndex = FormatIndex,
 }

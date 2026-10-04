@@ -20,6 +20,11 @@ function Utility.PathType(Path: string): "absolute" | "relative"
 		return "absolute"
 	end
 
+	-- UNC paths (\\server\share) are absolute on windows systems
+	if string.sub(Path, 1, 2) == "\\\\" then
+		return "absolute"
+	end
+
 	-- on windows systems, it is %w:[\\/]
 	if string.sub(Path, 2, 2) == ":" then
 		return "absolute"

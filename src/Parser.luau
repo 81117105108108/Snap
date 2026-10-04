@@ -369,6 +369,21 @@ local function IsDeclarationTypeSimilar(A: Declarations, B: Declarations): boole
 	return false
 end
 
+-- ex: u8? — module-level so Parser.Type doesn't allocate a closure per type.
+local function WrapInOptional(self: Parser, Declaration: TypeNode, Name: Token): TypeNode
+	local Optional = self:Optional()
+	if Optional then
+		return {
+			Type = "Optional",
+			Name = Name.Value,
+			Value = { Of = Declaration },
+			Tokens = {},
+		} :: Optional
+	end
+
+	return Declaration
+end
+
 ---- Lexer Functions -----
 
 function Parser.Peek(self: Parser): Token
@@ -1321,20 +1336,7 @@ function Parser.Type(self: Parser, Name: Token, Keyword: Token?, IsDataField: bo
 		end
 	end
 
-	local function WrapInOptional()
-		-- ex: u8?
-		local Optional = self:Optional()
-		if Optional then
-			Declaration = {
-				Type = "Optional",
-				Name = Name.Value,
-				Value = { Of = Declaration },
-				Tokens = {},
-			} :: Optional
-		end
-	end
-
-	WrapInOptional()
+	Declaration = WrapInOptional(self, Declaration, Name)
 
 	-- ex: u8[][][]
 	while true do
@@ -1353,7 +1355,7 @@ function Parser.Type(self: Parser, Name: Token, Keyword: Token?, IsDataField: bo
 			} :: Array
 		end
 
-		WrapInOptional()
+		Declaration = WrapInOptional(self, Declaration, Name)
 
 		if Array == nil then
 			break

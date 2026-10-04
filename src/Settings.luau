@@ -213,16 +213,26 @@ return {
 	},
 
 	Primitives = Primitives,
-	GetCasing = function(Case: Case): Cases
-		local Index = Indexes[Case]
-		if not Index then
-			error(`Unknown casing "{Case}", expected one of "Pascal" or "Camel" or "Snake"`)
-		end
+	GetCasing = (function()
+		-- Only three casings exist; memoize instead of rebuilding per Generate.
+		local Cache: { [Case]: Cases } = {}
+		return function(Case: Case): Cases
+			local Cached = Cache[Case]
+			if Cached then
+				return Cached
+			end
 
-		local Casing: any = {}
-		for Key, Options in Cases do
-			Casing[Key] = Options[Index]
+			local Index = Indexes[Case]
+			if not Index then
+				error(`Unknown casing "{Case}", expected one of "Pascal" or "Camel" or "Snake"`)
+			end
+
+			local Casing: any = {}
+			for Key, Options in Cases do
+				Casing[Key] = Options[Index]
+			end
+			Cache[Case] = Casing
+			return Casing
 		end
-		return Casing
-	end,
+	end)(),
 }

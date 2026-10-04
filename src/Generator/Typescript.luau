@@ -35,16 +35,7 @@ local function GetPrefix(Indent: number): string
 	return Indent == 0 and "declare " or ""
 end
 
-local function IsValidIdentifier(Identifier: string): boolean
-	return Identifier:match("%a%w*") == Identifier
-end
-
-local function FormatKey(Key: string): string
-	if IsValidIdentifier(Key) then
-		return Key
-	end
-	return `["{Key}"]`
-end
+local FormatKey = Util.FormatKey
 
 local function GetTypescriptType(State: State, Declaration: Type): (string, string)
 	local Type = ""
@@ -151,12 +142,7 @@ function Generators.Type(State: State, Type: Type)
 
 	local Generics = ""
 	if Value.Generics then
-		local Types = {}
-		for _, Generic in Value.Generics.List do
-			table.insert(Types, Generic)
-		end
-
-		Generics = `<{table.concat(Types, ",")}>`
+		Generics = `<{table.concat(Value.Generics.List, ",")}>`
 	end
 
 	StringBuilder.Push(`type {Name}{Generics} = {TypescriptType}`, 0, Indent)
