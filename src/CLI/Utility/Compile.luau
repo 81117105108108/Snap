@@ -68,6 +68,26 @@ local function CreateDirectoryIfNotFound(Path: string, Options: CompileOptions)
 	error("User refused prompt to create directory")
 end
 
+--> Derives the final .luau output path and its sibling .d.ts path.
+--> Relative outputs resolve against the definition file's directory.
+local function ResolveOutputPaths(OutputPath: string, FileDirectory: string): (string, string)
+	local Directory, Filename = PathParser.Components(OutputPath)
+	assert(Filename and Filename ~= "", `Unable to parse filename from output path "{OutputPath}".`)
+	if not Directory or Directory == "" then
+		-- Bare filenames (e.g. `option ClientOutput = "Client"`) have no
+		-- directory component; without this they resolve to "/Client.luau",
+		-- which PathType misclassifies as absolute (filesystem root).
+		Directory = "./"
+	end
+	local TypescriptFilename = if Filename == "init" then "index" else Filename
+	local LuauPath = `{Directory}/{Filename}.luau`
+	local TypescriptPath = if PathParser.PathType(LuauPath) == "absolute"
+		then `{Directory}/{TypescriptFilename}.d.ts`
+		else `{FileDirectory}{Directory}/{TypescriptFilename}.d.ts`
+	local Output = if PathParser.PathType(LuauPath) == "absolute" then LuauPath else `{FileDirectory}{LuauPath}`
+	return Output, TypescriptPath
+end
+
 ---- Public Functions ----
 
 function Utility.Compile(Path: string, Options: CompileOptions)
@@ -98,43 +118,10 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 	assert(ClientOutputPath, "A client output path must be defined.")
 	assert(ServerOutputPath, "A server output path must be defined.")
 
-	local ClientTypescriptPath
-	local ServerTypescriptPath
+	local ClientOutput, ClientTypescriptPath = ResolveOutputPaths(ClientOutputPath, FileDirectory)
+	local ServerOutput, ServerTypescriptPath = ResolveOutputPaths(ServerOutputPath, FileDirectory)
 
-	do
-		local Directory, Filename = PathParser.Components(ClientOutputPath)
-		local TypescriptFilename = if Filename == "init" then "index" else Filename
-		ClientOutputPath = `{Directory}/{Filename}.luau`
-		ClientTypescriptPath = if PathParser.PathType(ClientOutputPath) == "absolute"
-			then `{Directory}/{TypescriptFilename}.d.ts`
-			else `{FileDirectory}{Directory}/{TypescriptFilename}.d.ts`
-	end
-
-	do
-		local Directory, Filename = PathParser.Components(ServerOutputPath)
-		local TypescriptFilename = if Filename == "init" then "index" else Filename
-		ServerOutputPath = `{Directory}/{Filename}.luau`
-		ServerTypescriptPath = if PathParser.PathType(ServerOutputPath) == "absolute"
-			then `{Directory}/{TypescriptFilename}.d.ts`
-			else `{FileDirectory}{Directory}/{TypescriptFilename}.d.ts`
-	end
-
-	local TypesOutput: string
-
-	local ClientOutput: string
-	local ServerOutput: string
-
-	if PathParser.PathType(ClientOutputPath) == "absolute" then
-		ClientOutput = ClientOutputPath
-	else
-		ClientOutput = `{FileDirectory}{ClientOutputPath}`
-	end
-
-	if PathParser.PathType(ServerOutputPath) == "absolute" then
-		ServerOutput = ServerOutputPath
-	else
-		ServerOutput = `{FileDirectory}{ServerOutputPath}`
-	end
+	local TypesOutput: string?
 
 	CreateDirectoryIfNotFound(ClientOutput, Options)
 	CreateDirectoryIfNotFound(ServerOutput, Options)

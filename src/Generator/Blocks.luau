@@ -171,11 +171,6 @@ function Block.Line(self: Block, Text: string, Indent: number?): Block
 	return self
 end
 
-function Block.Character(self: Block, Character: string): Block
-	table.insert(self.Content, Character)
-	return self
-end
-
 function Block.Comment(self: Block, Content: string): Block
 	self:Line(`-- {Content}`)
 	return self
@@ -281,10 +276,6 @@ function Block.Wrap(self: Block, Front: string, Back: string): Block
 	self.Content[#self.Content] = `{string.gsub(Last, "\n", "")}{Back}\n`
 
 	return self
-end
-
-function Block.Unwrap(self: Block)
-	return table.concat(self.Content)
 end
 
 local Function = {}

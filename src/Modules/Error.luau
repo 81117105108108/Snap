@@ -174,8 +174,10 @@ function Error.Slice(self: Class, Span: Span): { Slice }
 			continue
 		end
 
-		local Spaces = (Span.Start - Start)
-		local Underlines = math.clamp(Span.End - Span.Start, 1, Length)
+		local Spaces = math.max(Span.Start - Start, 0)
+		-- Empty lines have zero length; still render a single underline
+		-- instead of crashing inside math.clamp.
+		local Underlines = math.clamp(Span.End - Span.Start, 1, math.max(Length, 1))
 
 		table.insert(Slices, {
 			Line = Line,

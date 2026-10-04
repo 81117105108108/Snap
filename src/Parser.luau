@@ -11,15 +11,8 @@ local Settings = require("./Settings")
 
 ---- Globals ----
 
-type NumberRange = { Min: number, Max: number }
-local NumberRange = {
-	new = function(Min: number, Max: number?): NumberRange
-		return {
-			Min = Min,
-			Max = Max or Min,
-		}
-	end,
-}
+type NumberRange = Settings.NumberRange
+local NumberRange = Settings.NumberRange
 
 ---- Types ----
 
@@ -65,7 +58,6 @@ type Attributes = {
 	Range: NumberRange?,
 	Export: boolean?,
 	Generics: Generics?,
-	Parameters: { TypeNode }?,
 	Components: { string }?,
 }
 
@@ -288,17 +280,10 @@ local RESERVED = {
 	StepReplication = true,
 }
 
-local PRIMITIVES = Settings.Primtives
+local PRIMITIVES = Settings.Primitives
 local ARRAY_BOUNDS = NumberRange.new(0, (PRIMITIVES.u16.Bounds :: NumberRange).Max)
 local UINT_BOUNDS = PRIMITIVES.u32.Bounds :: NumberRange
 local DOUBLE_BOUNDS = PRIMITIVES.f64.Bounds :: NumberRange
-
----- Variables -----
-
-local TotalOptions = 0
-for _ in OPTIONS do
-	TotalOptions += 1
-end
 
 ---- Main ----
 
@@ -328,7 +313,7 @@ function Parser.new(Directory: string?, File: string?): Parser
 		File = File,
 		Directory = Directory or "./",
 
-		Lexer = Lexer.new("Parsing"),
+		Lexer = Lexer.new(nil, "Parsing"),
 		Symbols = {},
 		Scope = nil :: any,
 	}, Parser)
@@ -372,7 +357,7 @@ local function GetFileSource(Path: string, Directory: string): (string?, string?
 	return fs.readFile(Path), FileDirectory
 end
 
-local function IsDeclarationTypeSimiliar(A: Declarations, B: Declarations): boolean
+local function IsDeclarationTypeSimilar(A: Declarations, B: Declarations): boolean
 	if A == B then
 		return true
 	end
@@ -465,8 +450,6 @@ function Parser.ConsumeAll(self: Parser, ...: Lexer.Types): ...Token
 end
 
 --> Used to consume identifiers without getting "Expected Identifier, got Keyword" errors
---> Boolean flag here is code smell but this codebase is already EOL and will soonish be replaced by the rewrite
-
 function Parser.ConsumeText(self: Parser, ConsumePrimitives: boolean?, ConsumeStrings: boolean?): Token
 	--> Get text token
 	local Token: Token
@@ -572,6 +555,12 @@ function Parser.GetGenerics(self: Parser): Generics?
 		end
 
 		local Token = self:ConsumeText()
+
+		if Generics.Keys[Token.Value] then
+			Error.new(Error.AnalyzeDuplicateTypeGeneric, self.Source, `Duplicate generic parameter`, self.File)
+				:Primary(Token, `Generic parameter "{Token.Value}" is already defined`)
+				:Emit()
+		end
 
 		Generics.Span.End = Token.End
 		Generics.Keys[Token.Value] = {}
@@ -696,10 +685,10 @@ function Parser.Components(self: Parser, Primitive: Settings.Primitive): { strin
 	end
 
 	local Components = {}
-	local Primitives = {}
+	local ComponentTokens = {}
 
 	for Index = 1, Primitive.AllowedComponents do
-		table.insert(Primitives, self:Consume("Primitive"))
+		table.insert(ComponentTokens, self:Consume("Primitive"))
 		if self:TryConsume("CloseChevrons") then
 			break
 		end
@@ -707,7 +696,7 @@ function Parser.Components(self: Parser, Primitive: Settings.Primitive): { strin
 		self:Consume("Comma")
 	end
 
-	for Index, Token in Primitives do
+	for Index, Token in ComponentTokens do
 		local Component = Token.Value
 		local ComponentPrimitive = PRIMITIVES[Component]
 
@@ -746,8 +735,11 @@ end
 --> struct MergeStruct { ..GenericStruct<u8> }
 --> GenericStruct is merged just fine but GenericMap loses the reference to the table for `T` somewhere along the process (likely at the deep clone stage)
 
-function Parser.ReplaceGenerics(self: Parser, Of: TypeNode, Previous: { [string]: TypeNode }?): TypeNode
-	local Clone = Table.DeepClone(Of) :: Struct
+function Parser.ReplaceGenerics(self: Parser, Of: TypeNode): TypeNode
+	-- Value.Scope back-pointers tie every node to the whole scope graph.
+	-- They are shared (never cloned): cloning them would copy every visible
+	-- declaration on each instantiation, doubling the tree every time.
+	local Clone = Table.DeepClone(Of, { Scope = true }) :: Struct
 	local Generics = Clone.Value.Generics :: Generics
 	local Replacements: { [string]: TypeNode } = {}
 
@@ -762,11 +754,15 @@ function Parser.ReplaceGenerics(self: Parser, Of: TypeNode, Previous: { [string]
 
 		local Token = self:Peek()
 		local Declaration = self:Type(Token)
-		Replacements[Key] = Declaration
+
+		--> Instantiate each distinct argument once and share it across every
+		--> placeholder of that key. Instantiated subtrees are never mutated
+		--> afterwards, so sharing is equivalent to per-use clones at a
+		--> fraction of the cloning cost.
+		local Replacement = Table.DeepClone(Declaration)
+		Replacements[Key] = Replacement
 
 		for _, Generic in List do
-			local Replacement = Table.DeepClone(Declaration)
-
 			Generic.Type = Replacement.Type
 			Generic.Value = Replacement.Value
 			Generic.Tokens = Replacement.Tokens
@@ -779,7 +775,7 @@ function Parser.ReplaceGenerics(self: Parser, Of: TypeNode, Previous: { [string]
 
 	self:Consume("CloseChevrons")
 
-	--> hack to find lost references
+	--> Substitute generics missed by the placeholder lists above
 	local function Traverse(Type: TypeNode)
 		if Type.Type == "Array" or Type.Type == "Optional" then
 			Traverse(Type.Value.Of)
@@ -788,13 +784,10 @@ function Parser.ReplaceGenerics(self: Parser, Of: TypeNode, Previous: { [string]
 				Traverse(Type)
 			end
 		elseif Type.Type == "Generic" then
-			local Key = Type.Value.Generic
-			local Declaration = Replacements[Key]
-			if Declaration == nil then
+			local Replacement = Replacements[Type.Value.Generic]
+			if Replacement == nil then
 				return
 			end
-
-			local Replacement = Table.DeepClone(Declaration)
 
 			Type.Type = Replacement.Type
 			Type.Value = Replacement.Value
@@ -924,7 +917,7 @@ end
 
 function Parser.Options(self: Parser): Options
 	local Options: Options = {}
-	for Index = 1, TotalOptions do
+	while true do
 		local Keyword = self:Peek()
 		if Keyword.Value ~= "option" then
 			break
@@ -1243,7 +1236,7 @@ function Parser.Type(self: Parser, Name: Token, Keyword: Token?, IsDataField: bo
 
 			if Token.Type == "Identifier" then
 				Declaration = self:Declaration(Name)
-				if not IsDeclarationTypeSimiliar(Declaration.Type, Type :: Declarations) then
+				if not IsDeclarationTypeSimilar(Declaration.Type, Type :: Declarations) then
 					Error.new(
 						Error.AnalyzeReferenceInvalidType,
 						self.Source,
@@ -1692,9 +1685,13 @@ function Parser.Declaration(self: Parser, Name: Token): TypeNode
 
 	local To = Reference.To
 
-	--> Need to use the new node name
+	--> Shallow-clone the node and its mutable attribute tables so that later
+	--> attribute assignment (Range/Components in Type, Scope/Export/Generics in
+	--> Declarations) cannot mutate the referenced declaration.
 	To = table.clone(To)
 	To.Name = Name.Value
+	To.Value = table.clone(To.Value)
+	To.Tokens = table.clone(To.Tokens)
 
 	if GENERICS_TYPES[To.Type] and To.Value.Generics then
 		To = self:ReplaceGenerics(To)

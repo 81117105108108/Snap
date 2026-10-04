@@ -45,14 +45,6 @@ function Builder.new(): Builder
 			PushLines(string.split(Text, "\n"), Returns, Tabs)
 		end,
 
-		Print = function()
-			print(table.concat(Strings))
-		end,
-
-		DumpNoClear = function()
-			return table.concat(Strings)
-		end,
-
 		Dump = function(): string
 			local Text = table.concat(Strings)
 			table.clear(Strings)

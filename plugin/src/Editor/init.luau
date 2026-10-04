@@ -65,7 +65,7 @@ local THEME = {
 }
 -- This is a comment
 local PRIMITIVES = {}
-for Primitive in Settings.Primtives do
+for Primitive in Settings.Primitives do
 	table.insert(PRIMITIVES, { Label = Primitive, Insert = Primitive })
 end
 
@@ -146,7 +146,7 @@ local TextSize = Input.TextSize
 local TextHeight = TextSize * Display.LineHeight
 
 --> Objects
-local SourceLexer = Lexer.new("Highlighting")
+local SourceLexer = Lexer.new(nil, "Highlighting")
 local SourceParser = Parser.new()
 
 local EditorWidget: DockWidgetPluginGui

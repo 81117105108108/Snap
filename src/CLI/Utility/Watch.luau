@@ -15,7 +15,10 @@ local PathParser = require("../../Modules/Path")
 
 type DateTime = dateTime.DateTime
 
-local IMPORT_PATTERN = `import "([%w%/%.-_]+)"`
+local IMPORT_PATTERNS = {
+	`import "([%w%/%.-_]+)"`,
+	`import '([%w%/%.-_]+)'`,
+}
 local WATCH_OPTIONS: Compile.CompileOptions = {
 	Debug = false,
 	Silent = true,
@@ -41,28 +44,24 @@ local function BuildImportsArray(Entry: string, PreviousArray: { string }?): { s
 	table.insert(Array, Entry)
 
 	local Source = fs.readFile(Entry)
-	local Directory = PathParser.Directory(Entry)
-	local Iterator = string.gmatch(Source, IMPORT_PATTERN)
+	local Directory = PathParser.Directory(Entry) or "./"
 
-	while true do
-		local Path = Iterator()
-		if not Path then
-			break
+	for _, Pattern in IMPORT_PATTERNS do
+		for Import in string.gmatch(Source, Pattern) do
+			local Path = `{Directory}{Import}`
+			Path = GetDefinitionFilePath(Path)
+
+			if not fs.isFile(Path) then
+				error(`No file to import at "{Path}"`)
+			end
+
+			--> Prevent repeats
+			if table.find(Array, Path) then
+				continue
+			end
+
+			BuildImportsArray(Path, Array)
 		end
-
-		Path = `{Directory}{Path}`
-		Path = GetDefinitionFilePath(Path)
-
-		if not fs.isFile(Path) then
-			error(`No file to import at "{Path}"`)
-		end
-
-		--> Prevent repeats
-		if table.find(Array, Path) then
-			continue
-		end
-
-		BuildImportsArray(Path, Array)
 	end
 
 	return Array

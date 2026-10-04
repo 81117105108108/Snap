@@ -1,4 +1,4 @@
-type NumberRange = { Min: number, Max: number }
+export type NumberRange = { Min: number, Max: number }
 local NumberRange = {
 	new = function(Min: number, Max: number?): NumberRange
 		return {
@@ -195,6 +195,7 @@ local Primitives: { [string]: Primitive } = {
 }
 
 return {
+	NumberRange = NumberRange,
 	Keywords = {
 		map = true,
 		set = true,
@@ -211,11 +212,11 @@ return {
 		export = true,
 	},
 
-	Primtives = Primitives,
+	Primitives = Primitives,
 	GetCasing = function(Case: Case): Cases
 		local Index = Indexes[Case]
 		if not Index then
-			error(`Unknown casing "{Case}", expectd one of "Pascal" or "Camel" or "Snake"`)
+			error(`Unknown casing "{Case}", expected one of "Pascal" or "Camel" or "Snake"`)
 		end
 
 		local Casing: any = {}

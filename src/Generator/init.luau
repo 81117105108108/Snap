@@ -79,7 +79,7 @@ local IGNORED_TYPES_IN_SHARED = {
 type Type = Parser.TypeNode
 type Scope = Parser.Scope
 type Context = "Client" | "Server" | "Shared"
-type NumberRange = { Min: number, Max: number }
+type NumberRange = Settings.NumberRange
 
 local Scope: Scope
 local Context: Context
@@ -103,7 +103,6 @@ local Channels: { [string]: { Count: number, Listening: boolean } } = {
 
 local Types = Prefabs.Types
 local Primitives = Prefabs.Primitives
-local Structures = Prefabs.Structures
 
 local function IsValidIdentifier(Identifier: string): boolean
 	return Identifier:match("%a%w*") == Identifier
@@ -990,21 +989,6 @@ function Generators.LuauType(
 	elseif Declaration.Type == "Optional" then
 		local Value = Declaration.Value
 		Type = `{Generators.LuauType(Value.Of)}?`
-	end
-
-	local Value = Declaration.Value
-
-	if Value.Parameters then
-		local Parameters = {}
-
-		--> Generate luau types for parameters
-		for Index, Parameter in Value.Parameters do
-			local ParameterType = Generators.LuauType(Parameter)
-			table.insert(Parameters, ParameterType)
-		end
-
-		--> Wrap in chevrons
-		Type = `{Type}<{table.concat(Parameters, ",")}>`
 	end
 
 	--> Generalized type generation, works for everything except tuples

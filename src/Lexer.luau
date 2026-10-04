@@ -53,8 +53,6 @@ export type Token = {
 	Value: any, -- string when highlighting; unquoted string or boolean when parsing
 	Start: number,
 	End: number,
-	Line: number?,
-	Column: number?,
 }
 
 -- ASCII Byte Constants (eliminates string comparisons in hot loops)
@@ -88,9 +86,8 @@ local BYTE_Z_UPPER = 90
 local BYTE_A_LOWER = 97
 local BYTE_Z_LOWER = 122
 
--- Defensive lookup supporting both correct spelling and the Settings.Primtives typo
 local KEYWORDS_MAP: { [string]: boolean } = Settings.Keywords or {}
-local PRIMITIVES_MAP: { [string]: boolean } = Settings.Primitives or (Settings :: any).Primtives or {}
+local PRIMITIVES_MAP: { [string]: boolean } = Settings.Primitives
 
 local BOOLEANS_MAP: { [string]: boolean } = {
 	["true"] = true,
@@ -169,53 +166,6 @@ function Lexer.Initialize(self: Lexer, Source: string)
 	self.Source = Source
 	self.Size = #Source
 	self.Cursor = 1
-end
-
---- Resets the current cursor without changing the source.
---- @param Cursor Optional 1-based byte position. Defaults to `1`.
-function Lexer.Reset(self: Lexer, Cursor: number?)
-	self.Cursor = Cursor or 1
-end
-
---- Converts a 1-based byte position into a 1-based line and column.
---- Positions are clamped to the valid source range plus the logical EOF position.
---- @param Position 1-based byte position in the current source.
---- @return The corresponding line number and column number.
-function Lexer.GetLineAndColumn(self: Lexer, Position: number): (number, number)
-	local line = 1
-	local lineStart = 1
-	local source = self.Source
-	local target = math.clamp(Position, 1, self.Size + 1)
-
-	for i = 1, target - 1 do
-		if string.byte(source, i) == BYTE_LF then
-			line += 1
-			lineStart = i + 1
-		end
-	end
-
-	return line, (target - lineStart) + 1
-end
-
---- Returns the next token without advancing `self.Cursor`.
---- @return The token that would be returned by `GetNextToken`.
-function Lexer.PeekToken(self: Lexer): Token
-	return self:GetNextToken(true)
-end
-
---- Tokenizes from the current cursor through EOF.
---- The returned array always ends with an `EndOfFile` token.
---- @return All tokens from the current position through EOF.
-function Lexer.Tokenize(self: Lexer): { Token }
-	local tokens: { Token } = {}
-	while true do
-		local token = self:GetNextToken(false)
-		table.insert(tokens, token)
-		if token.Type == "EndOfFile" then
-			break
-		end
-	end
-	return tokens
 end
 
 --- Scans and returns the next token.
