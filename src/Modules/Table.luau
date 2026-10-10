@@ -1,55 +1,130 @@
-return {
-	Merge = function(...: { any }): { any }
-		local Tables = { ... }
-		local Allocate = 0
+--!strict
+--!native
+--!optimize 2
 
-		for _, Table in Tables do
-			Allocate += #Table
+export type OpaqueKeys = { [any]: boolean }
+
+--[=[
+	Internal recursive cloning worker.
+	Kept at file scope to eliminate closure allocation churn across calls.
+]=]
+local function deepCloneInternal(
+	node: any,
+	cache: { [any]: any },
+	opaqueKeys: OpaqueKeys?
+): any
+	if type(node) ~= "table" then
+		return node
+	end
+
+	local cached = cache[node]
+	if cached ~= nil then
+		return cached
+	end
+
+	-- Fast path: `table.clone` performs a single C-level allocation matching the
+	-- exact hash and array capacity of the source, copying metatables and primitives.
+	-- This eliminates repeated table resizing/rehashing during property population.
+	local copy = table.clone(node)
+	cache[node] = copy
+
+	if opaqueKeys ~= nil then
+		for key, value in node do
+			-- Opaque keys (e.g. Scope/Parent back-pointers) and primitive values
+			-- are already copied by reference/value via `table.clone`. We only
+			-- mutate nested tables that are not designated opaque.
+			if type(value) == "table" and not opaqueKeys[key] then
+				copy[key] = deepCloneInternal(value, cache, opaqueKeys)
+			end
+		end
+	else
+		for key, value in node do
+			if type(value) == "table" then
+				copy[key] = deepCloneInternal(value, cache, nil)
+			end
+		end
+	end
+
+	return copy
+end
+
+--[=[
+	Recursively clones tables with cycle/DAG protection and optional opaque keys.
+	Generic signature preserves the exact caller type without downcasting to `any`.
+]=]
+local function deepClone<T>(value: T, opaqueKeys: OpaqueKeys?): T
+	if type(value) ~= "table" then
+		return value
+	end
+
+	local cache: { [any]: any } = {}
+	return (deepCloneInternal(value, cache, opaqueKeys) :: any) :: T
+end
+
+--[=[
+	Concatenates multiple arrays into a single contiguous array.
+	Specialized for 0, 1, and 2 arguments to eliminate vararg `{ ... }` heap allocations.
+]=]
+local function merge<T>(...: { T }): { T }
+	local count = select("#", ...)
+
+	if count == 0 then
+		return {}
+	end
+
+	if count == 1 then
+		local first = ...
+		return if first ~= nil then table.clone(first) else {}
+	end
+
+	-- Fast path: 2-table merges (the vast majority of operations) avoid packing `...` into a table.
+	if count == 2 then
+		local a, b = ...
+		local lenA = if a ~= nil then #a else 0
+		local lenB = if b ~= nil then #b else 0
+		local merged = table.create(lenA + lenB) :: { T }
+
+		if lenA > 0 then
+			table.move(a :: { T }, 1, lenA, 1, merged)
+		end
+		if lenB > 0 then
+			table.move(b :: { T }, 1, lenB, lenA + 1, merged)
 		end
 
-		local Index = 1
-		local Merged = table.create(Allocate)
+		return merged
+	end
 
-		for _, Table in Tables do
-			table.move(Table, 1, #Table, Index, Merged)
-			Index += #Table
+	-- N-table fallback
+	local tables = { ... }
+	local totalLen = 0
+
+	for i = 1, count do
+		local t = tables[i]
+		if t ~= nil then
+			totalLen += #t
 		end
+	end
 
-		return Merged
-	end,
-	DeepClone = function(Table: { [any]: any }, OpaqueKeys: { [any]: boolean }?): { [any]: any }
-		local Cache = {}
+	local merged = table.create(totalLen) :: { T }
+	local offset = 1
 
-		local function Clone(Original)
-			-- Fast path: only tables need cloning or cycle detection.
-			if type(Original) ~= "table" then
-				return Original
+	for i = 1, count do
+		local t = tables[i]
+		if t ~= nil then
+			local len = #t
+			if len > 0 then
+				table.move(t :: { T }, 1, len, offset, merged)
+				offset += len
 			end
-
-			local Cached = Cache[Original]
-			if Cached ~= nil then
-				return Cached
-			end
-
-			-- Keys are never cloned: AST tables use string and number keys,
-			-- and preserving key identity keeps shared references intact.
-			local Copy = {}
-			Cache[Original] = Copy
-
-			for Key, Value in Original do
-				-- Opaque keys (such as Scope back-pointers) are shared by
-				-- reference: cloning them would copy the whole scope graph
-				-- reachable from every node.
-				if OpaqueKeys and OpaqueKeys[Key] then
-					Copy[Key] = Value
-				else
-					Copy[Key] = Clone(Value)
-				end
-			end
-
-			return Copy
 		end
+	end
 
-		return Clone(Table)
-	end,
-}
+	return merged
+end
+
+local TableUtil = table.freeze({
+	Merge = merge,
+	DeepClone = deepClone,
+})
+
+return TableUtil
